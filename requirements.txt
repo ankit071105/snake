@@ -1,0 +1,7 @@
+streamlit 
+opencv-python 
+numpy 
+pillow 
+pygame 
+gTTS 
+cvzone
