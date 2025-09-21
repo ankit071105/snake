@@ -1,5 +1,4 @@
 import streamlit as st
-import cv2
 import numpy as np
 import random
 import time
@@ -8,7 +7,7 @@ import tempfile
 import os
 from gtts import gTTS
 from PIL import Image, ImageDraw
-from cvzone.HandTrackingModule import HandDetector
+import mediapipe as mp
 
 # Page config
 st.set_page_config(page_title="Finger Gesture Snake Game", page_icon="🐍", layout="wide")
@@ -68,18 +67,51 @@ def reset_game():
         "last_gesture": "NONE",
     })
 
-# --- Gesture Detection (cvzone) ---
-detector = HandDetector(detectionCon=0.7, maxHands=1)
+# Initialize MediaPipe Hands
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.5
+)
 
 def detect_finger_gesture(frame):
-    frame = cv2.flip(frame, 1)
-    hands, img = detector.findHands(frame, flipType=False)
+    # Convert the BGR image to RGB
+    rgb_frame = frame
+    if len(frame.shape) == 3:
+        if frame.shape[2] == 4:  # RGBA image
+            rgb_frame = frame[:, :, :3]
+        rgb_frame = np.ascontiguousarray(rgb_frame)
+    
+    # Process the image and find hands
+    results = hands.process(rgb_frame)
     gesture = "NONE"
-
-    if hands:
-        hand = hands[0]
-        fingers = detector.fingersUp(hand)  # returns [thumb, index, middle, ring, pinky]
-
+    
+    if results.multi_hand_landmarks:
+        hand_landmarks = results.multi_hand_landmarks[0]
+        
+        # Get finger states
+        fingers = []
+        
+        # Thumb
+        if hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP].x > hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP].x:
+            fingers.append(1)
+        else:
+            fingers.append(0)
+        
+        # Other fingers
+        for tip, pip in [(mp_hands.HandLandmark.INDEX_FINGER_TIP, mp_hands.HandLandmark.INDEX_FINGER_PIP),
+                         (mp_hands.HandLandmark.MIDDLE_FINGER_TIP, mp_hands.HandLandmark.MIDDLE_FINGER_PIP),
+                         (mp_hands.HandLandmark.RING_FINGER_TIP, mp_hands.HandLandmark.RING_FINGER_PIP),
+                         (mp_hands.HandLandmark.PINKY_TIP, mp_hands.HandLandmark.PINKY_PIP)]:
+            if hand_landmarks.landmark[tip].y < hand_landmarks.landmark[pip].y:
+                fingers.append(1)
+            else:
+                fingers.append(0)
+        
+        # Determine gesture based on finger states
         if fingers == [0, 1, 0, 0, 0]:
             gesture = "UP"        # Only index
         elif fingers == [0, 0, 1, 0, 0]:
@@ -92,9 +124,16 @@ def detect_finger_gesture(frame):
             gesture = "PAUSE"     # Open hand
         elif fingers == [0, 0, 0, 0, 0]:
             gesture = "RESUME"    # Fist
-
-    cv2.putText(frame, f"Gesture: {gesture}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+        # Draw hand landmarks
+        mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+    
+    # Add gesture text to frame
+    frame_pil = Image.fromarray(frame)
+    draw = ImageDraw.Draw(frame_pil)
+    draw.text((10, 30), f"Gesture: {gesture}", fill=(0, 255, 0))
+    frame = np.array(frame_pil)
+    
     return gesture, frame
 
 # --- Game logic ---
@@ -199,8 +238,13 @@ with col2:
     camera_img = st.camera_input("Show your hand", key="camera")
     if camera_img:
         bytes_data = camera_img.getvalue()
-        cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-        gesture, processed_img = detect_finger_gesture(cv2_img)
+        # Convert to numpy array
+        nparr = np.frombuffer(bytes_data, np.uint8)
+        # Decode image
+        img = Image.open(camera_img)
+        frame = np.array(img)
+        
+        gesture, processed_img = detect_finger_gesture(frame)
         state["last_gesture"] = gesture
         if gesture == "UP" and state["direction"] != (0, 1):
             state["direction"] = (0, -1)
@@ -214,11 +258,10 @@ with col2:
             state["paused"] = True
         elif gesture == "RESUME":
             state["paused"] = False
-        st.image(processed_img, channels="BGR", use_column_width=True)
+        st.image(processed_img, use_column_width=True)
         st.write(f"Detected Gesture: **{gesture}**")
     else:
         st.info("Please allow camera access")
 
 time.sleep(0.1)
 st.rerun()
-
