@@ -1,7 +1,6 @@
-streamlit 
-opencv-python 
-numpy 
-pillow 
-pygame 
-gTTS 
-cvzone
+streamlit
+numpy
+pillow
+pygame
+gtts
+mediapipe
