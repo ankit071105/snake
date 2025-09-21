@@ -3,4 +3,3 @@ numpy
 pillow
 pygame
 gtts
-mediapipe
