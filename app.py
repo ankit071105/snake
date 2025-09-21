@@ -6,8 +6,7 @@ import pygame
 import tempfile
 import os
 from gtts import gTTS
-from PIL import Image, ImageDraw
-import mediapipe as mp
+from PIL import Image, ImageDraw, ImageFilter
 
 # Page config
 st.set_page_config(page_title="Finger Gesture Snake Game", page_icon="🐍", layout="wide")
@@ -67,72 +66,75 @@ def reset_game():
         "last_gesture": "NONE",
     })
 
-# Initialize MediaPipe Hands
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5
-)
-
+# Simple gesture detection using color thresholding
 def detect_finger_gesture(frame):
-    # Convert the BGR image to RGB
-    rgb_frame = frame
-    if len(frame.shape) == 3:
-        if frame.shape[2] == 4:  # RGBA image
-            rgb_frame = frame[:, :, :3]
-        rgb_frame = np.ascontiguousarray(rgb_frame)
+    # Convert to numpy array
+    img_array = np.array(frame)
     
-    # Process the image and find hands
-    results = hands.process(rgb_frame)
+    # Convert to HSV color space for better skin detection
+    from colorsys import rgb_to_hsv
+    
+    # Simple skin color detection (adjust these values based on lighting)
+    skin_lower = np.array([0, 30, 30], dtype=np.uint8)
+    skin_upper = np.array([30, 255, 255], dtype=np.uint8)
+    
+    # Convert to HSV
+    hsv = np.zeros_like(img_array)
+    for i in range(img_array.shape[0]):
+        for j in range(img_array.shape[1]):
+            r, g, b = img_array[i, j] / 255.0
+            h, s, v = rgb_to_hsv(r, g, b)
+            hsv[i, j] = [int(h * 179), int(s * 255), int(v * 255)]
+    
+    # Create skin mask
+    skin_mask = np.zeros((img_array.shape[0], img_array.shape[1]), dtype=np.uint8)
+    for i in range(img_array.shape[0]):
+        for j in range(img_array.shape[1]):
+            if (skin_lower[0] <= hsv[i, j, 0] <= skin_upper[0] and
+                skin_lower[1] <= hsv[i, j, 1] <= skin_upper[1] and
+                skin_lower[2] <= hsv[i, j, 2] <= skin_upper[2]):
+                skin_mask[i, j] = 255
+    
+    # Find contours
+    from PIL import Image
+    contour_img = Image.fromarray(skin_mask).filter(ImageFilter.FIND_EDGES)
+    contour_array = np.array(contour_img)
+    
+    # Simple gesture detection based on contour shape
     gesture = "NONE"
     
-    if results.multi_hand_landmarks:
-        hand_landmarks = results.multi_hand_landmarks[0]
-        
-        # Get finger states
-        fingers = []
-        
-        # Thumb
-        if hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP].x > hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP].x:
-            fingers.append(1)
-        else:
-            fingers.append(0)
-        
-        # Other fingers
-        for tip, pip in [(mp_hands.HandLandmark.INDEX_FINGER_TIP, mp_hands.HandLandmark.INDEX_FINGER_PIP),
-                         (mp_hands.HandLandmark.MIDDLE_FINGER_TIP, mp_hands.HandLandmark.MIDDLE_FINGER_PIP),
-                         (mp_hands.HandLandmark.RING_FINGER_TIP, mp_hands.HandLandmark.RING_FINGER_PIP),
-                         (mp_hands.HandLandmark.PINKY_TIP, mp_hands.HandLandmark.PINKY_PIP)]:
-            if hand_landmarks.landmark[tip].y < hand_landmarks.landmark[pip].y:
-                fingers.append(1)
-            else:
-                fingers.append(0)
-        
-        # Determine gesture based on finger states
-        if fingers == [0, 1, 0, 0, 0]:
-            gesture = "UP"        # Only index
-        elif fingers == [0, 0, 1, 0, 0]:
-            gesture = "DOWN"      # Only middle
-        elif fingers == [0, 1, 1, 0, 0]:
-            gesture = "LEFT"      # Peace sign
-        elif fingers == [1, 1, 0, 0, 0]:
-            gesture = "RIGHT"     # L-shape
-        elif fingers == [1, 1, 1, 1, 1]:
-            gesture = "PAUSE"     # Open hand
-        elif fingers == [0, 0, 0, 0, 0]:
-            gesture = "RESUME"    # Fist
-            
-        # Draw hand landmarks
-        mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+    # Count white pixels in different regions of the image
+    height, width = skin_mask.shape
+    top_region = skin_mask[0:height//3, :]
+    bottom_region = skin_mask[2*height//3:, :]
+    left_region = skin_mask[:, 0:width//3]
+    right_region = skin_mask[:, 2*width//3:]
     
-    # Add gesture text to frame
-    frame_pil = Image.fromarray(frame)
-    draw = ImageDraw.Draw(frame_pil)
-    draw.text((10, 30), f"Gesture: {gesture}", fill=(0, 255, 0))
-    frame = np.array(frame_pil)
+    top_pixels = np.sum(top_region > 0)
+    bottom_pixels = np.sum(bottom_region > 0)
+    left_pixels = np.sum(left_region > 0)
+    right_pixels = np.sum(right_region > 0)
+    
+    # Simple gesture detection logic
+    total_pixels = np.sum(skin_mask > 0)
+    
+    if total_pixels > 1000:  # Ensure there's enough skin pixels
+        if top_pixels > bottom_pixels and top_pixels > left_pixels and top_pixels > right_pixels:
+            gesture = "UP"
+        elif bottom_pixels > top_pixels and bottom_pixels > left_pixels and bottom_pixels > right_pixels:
+            gesture = "DOWN"
+        elif left_pixels > right_pixels and left_pixels > top_pixels and left_pixels > bottom_pixels:
+            gesture = "LEFT"
+        elif right_pixels > left_pixels and right_pixels > top_pixels and right_pixels > bottom_pixels:
+            gesture = "RIGHT"
+        elif total_pixels > 5000:  # Large area (open hand)
+            gesture = "PAUSE"
+        elif total_pixels < 2000:  # Small area (fist)
+            gesture = "RESUME"
+    
+    # Draw gesture text on frame
+    draw = ImageDraw.Draw(frame)
+    draw.text((10, 10), f"Gesture: {gesture}", fill=(0, 255, 0))
     
     return gesture, frame
 
@@ -207,12 +209,14 @@ st.title("🐍 Finger Gesture Snake Game")
 
 st.markdown("""
 ## 🎮 How to Control the Game
-- **Move Up**: Show only your **index finger** 👆  
-- **Move Down**: Show only your **middle finger** 🖕  
-- **Move Left**: Show **index + middle fingers** ✌️  
-- **Move Right**: Show **thumb + index** 👍  
-- **Pause Game**: Open hand 🖐️  
-- **Resume Game**: Closed fist ✊  
+- **Move Up**: Move your hand to the top of the camera view 👆  
+- **Move Down**: Move your hand to the bottom of the camera view 👇  
+- **Move Left**: Move your hand to the left of the camera view 👈  
+- **Move Right**: Move your hand to the right of the camera view 👉  
+- **Pause Game**: Show an open hand 🖐️  
+- **Resume Game**: Show a closed fist ✊  
+
+Make sure your hand is well-lit and contrasts with the background for best results.
 """)
 
 with st.sidebar:
@@ -223,6 +227,7 @@ with st.sidebar:
         st.rerun()
     state["voice_enabled"] = st.checkbox("Voice Feedback", value=state["voice_enabled"])
     st.write(f"Score: {state['score']} | Length: {len(state['snake'])}")
+    st.write(f"Last Gesture: {state['last_gesture']}")
 
 col1, col2 = st.columns([2, 1])
 
@@ -237,15 +242,10 @@ with col2:
     st.header("Camera Feed")
     camera_img = st.camera_input("Show your hand", key="camera")
     if camera_img:
-        bytes_data = camera_img.getvalue()
-        # Convert to numpy array
-        nparr = np.frombuffer(bytes_data, np.uint8)
-        # Decode image
         img = Image.open(camera_img)
-        frame = np.array(img)
-        
-        gesture, processed_img = detect_finger_gesture(frame)
+        gesture, processed_img = detect_finger_gesture(img)
         state["last_gesture"] = gesture
+        
         if gesture == "UP" and state["direction"] != (0, 1):
             state["direction"] = (0, -1)
         elif gesture == "DOWN" and state["direction"] != (0, -1):
@@ -258,10 +258,37 @@ with col2:
             state["paused"] = True
         elif gesture == "RESUME":
             state["paused"] = False
+            
         st.image(processed_img, use_column_width=True)
         st.write(f"Detected Gesture: **{gesture}**")
     else:
         st.info("Please allow camera access")
+
+# Add keyboard fallback controls
+st.markdown("---")
+st.subheader("Keyboard Controls (Fallback)")
+col1, col2, col3 = st.columns(3)
+with col1:
+    if st.button("⬆️ Up", key="kb_up"):
+        if state["direction"] != (0, 1):
+            state["direction"] = (0, -1)
+with col2:
+    if st.button("⬇️ Down", key="kb_down"):
+        if state["direction"] != (0, -1):
+            state["direction"] = (0, 1)
+with col3:
+    if st.button("⏸️ Pause/Resume", key="kb_pause"):
+        state["paused"] = not state["paused"]
+
+col4, col5 = st.columns(2)
+with col4:
+    if st.button("⬅️ Left", key="kb_left"):
+        if state["direction"] != (1, 0):
+            state["direction"] = (-1, 0)
+with col5:
+    if st.button("➡️ Right", key="kb_right"):
+        if state["direction"] != (-1, 0):
+            state["direction"] = (1, 0)
 
 time.sleep(0.1)
 st.rerun()
